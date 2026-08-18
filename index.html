@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎂 生日快乐</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+        width: 100%; height: 100%;
+        overflow: hidden;
+        background: linear-gradient(160deg, #050510 0%, #0b1230 52%, #1c2c5b 100%);
+        font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+    /* ---------- 星空层（最底层，透过粒子层可见） ---------- */
+    #star-canvas {
+        position: fixed; inset: 0;
+        width: 100vw; height: 100vh;
+        pointer-events: none;
+        z-index: 1;
+    }
+    /* ---------- 粒子蛋糕层（星空之上） ---------- */
+    #canvas-box {
+        position: fixed; inset: 0;
+        width: 100vw; height: 100vh;
+        z-index: 2;
+    }
+
+    /* ---------- 流星层（2D 覆盖层，点击联动） ---------- */
+    #meteor-canvas {
+        position: fixed; inset: 0;
+        width: 100vw; height: 100vh;
+        pointer-events: none;
+        z-index: 5;
+    }
+
+    /* ---------- 页面覆盖层（提示文字） ---------- */
+    .overlay {
+        position: fixed; inset: 0;
+        pointer-events: none;
+        display: flex; flex-direction: column;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6vh 4vw;
+        color: #fff;
+        text-align: center;
+        z-index: 10;
+    }
+    .overlay .top {
+        font-size: clamp(18px, 3vw, 30px);
+        letter-spacing: 4px;
+        opacity: 0.9;
+        text-shadow: 0 0 12px rgba(255, 200, 120, .6);
+    }
+    .overlay .hint {
+        font-size: clamp(14px, 2.2vw, 20px);
+        color: rgba(255,255,255,.75);
+        letter-spacing: 6px;
+        animation: pulse 2s ease-in-out infinite;
+        text-shadow: 0 0 10px rgba(255,255,255,.4);
+    }
+    .overlay .bottom {
+        font-size: clamp(12px, 1.6vw, 15px);
+        color: rgba(255,255,255,.45);
+        letter-spacing: 2px;
+    }
+    .overlay.fired .hint { display: none; }
+    @keyframes pulse {
+        0%, 100% { opacity: .35; }
+        50% { opacity: 1; }
+    }
+</style>
+</head>
+<body>
+
+    <canvas id="star-canvas"></canvas>
+    <div id="canvas-box"></div>
+    <canvas id="meteor-canvas"></canvas>
+
+    <!-- ============================================================
+         ✏️✏️✏️  在这里配置你的专属祝福  ✏️✏️✏️
+         ------------------------------------------------------------
+         MESSAGES : 点击屏幕轮播的祝福语
+                    （蛋糕点燃后，每次点击烟花爆炸，聚合成下一句）
+         TOP_TEXT : 页面顶部显示的称呼/短句
+         增删或调整句子顺序，直接改下面 MESSAGES 数组即可
+         ============================================================ -->
+    <div class="overlay" id="overlay">
+        <div class="top" id="topText">给最特别的你 🎀</div>
+        <div class="hint">✨ 点击屏幕，点燃烟花 ✨</div>
+        <div class="bottom">—— 一份来自我的心意 ——</div>
+    </div>
+
+    <!-- 本地引入 Three.js + Particle Cake（离线可用，无需网络） -->
+    <script src="vendor/three.min.js"></script>
+    <script src="dist/particle-cake.min.js"></script>
+
+    <script>
+        /* ============================================================
+         * ★★★ 在这里修改祝福语 ★★★
+         * MESSAGES 数组：点击屏幕轮播的祝福语，按顺序逐句显示。
+         * 想增删/换顺序，直接改这个数组即可。
+         * ============================================================ */
+        const MESSAGES = [
+            '生日快乐',
+            '一岁一礼，一寸欢喜。',
+            '愿岁并谢，与长友兮。'
+        ];
+
+        const CONFIG = {
+            // 页面顶部显示的短句
+            TOP_TEXT: '给最特别的你 🎀',
+            // 可选微调参数
+            particleCount: 15000,   // 粒子数量（越大越细腻，手机自动减半）
+            candleColor: '#FFFF00'  // 蜡烛火苗颜色
+        };
+
+        // 应用顶部文字
+        document.getElementById('topText').textContent = CONFIG.TOP_TEXT;
+
+        // 创建粒子蛋糕（初始形态为蛋糕，第一次点击后开始逐句显示祝福语）
+        const cake = new ParticleCake('canvas-box', {
+            text: MESSAGES[0],
+            particleCount: CONFIG.particleCount,
+            candleColor: CONFIG.candleColor,
+            fontFamily: '"KaiTi", "楷体", "STKaiti", "Kaiti SC", "AR PL UKai CN", serif' // 楷体
+        });
+
+        // 字号自适应：按整句字数 + 当前屏幕宽高比动态计算上限，
+        // 让单行文字在任何屏幕上都能放大到"正好占满一行"且不超屏
+        function fitTextSize(text) {
+            const len = text.length;
+            const aspect = window.innerWidth / window.innerHeight;      // 当前屏幕宽高比
+            const halfH = (cake.config.cameraZ || 400) * Math.tan((cake.camera.fov * Math.PI) / 360);
+            const visibleW = halfH * 2 * aspect;                       // 3D 空间可见宽度（世界单位）
+            const textScale = cake.config.textScale || 1.2;
+            const byScreen = (visibleW * 0.95) / (len * textScale);    // 屏幕宽度上限
+            const byCanvas = ((cake.isMobile ? 350 : 800) * 0.95) / len; // 采样画布宽度上限
+            const cap = cake.isMobile ? 40 : 150;                      // 最大字号
+            return Math.max(18, Math.floor(Math.min(cap, byScreen, byCanvas)));
+        }
+
+        // ================= 星空宇宙背景 =================
+        const sCanvas = document.getElementById('star-canvas');
+        const sCtx = sCanvas.getContext('2d');
+        let sW = 0, sH = 0;
+        const stars = [];
+        function genStars() {
+            stars.length = 0;
+            const count = Math.max(160, Math.floor((sW * sH) / 2000)); // 约每2000px²一颗星
+            for (let i = 0; i < count; i++) {
+                const big = Math.random() < 0.12; // 少数大亮星
+                stars.push({
+                    x: Math.random() * sW,
+                    y: Math.random() * sH,
+                    r: big ? 1.4 + Math.random() * 1.6 : 0.3 + Math.random() * 1.1,
+                    alpha: 0.25 + Math.random() * 0.65,
+                    speed: 0.4 + Math.random() * 2.2,   // 闪烁速度
+                    phase: Math.random() * Math.PI * 2, // 闪烁相位
+                    color: ['#ffffff', '#dbe9ff', '#fff6d5', '#e6d9ff'][Math.floor(Math.random() * 4)]
+                });
+            }
+        }
+        function resizeStars() {
+            sW = sCanvas.width = window.innerWidth;
+            sH = sCanvas.height = window.innerHeight;
+            genStars();
+        }
+        resizeStars();
+        window.addEventListener('resize', resizeStars);
+
+        let starTime = 0;
+        function drawStars() {
+            starTime += 0.016;
+            sCtx.clearRect(0, 0, sW, sH);
+            for (const s of stars) {
+                // 正弦闪烁：亮度柔和起伏
+                const a = s.alpha * (0.55 + 0.45 * Math.sin(starTime * s.speed + s.phase));
+                sCtx.globalAlpha = Math.max(0.08, a);
+                sCtx.fillStyle = s.color;
+                sCtx.beginPath();
+                sCtx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+                sCtx.fill();
+            }
+            sCtx.globalAlpha = 1;
+            requestAnimationFrame(drawStars);
+        }
+        drawStars();
+
+        // ================= 流星背景（点击联动） =================
+        const mCanvas = document.getElementById('meteor-canvas');
+        const mCtx = mCanvas.getContext('2d');
+        let mW = 0, mH = 0;
+        function resizeMeteor() {
+            mW = mCanvas.width = window.innerWidth;
+            mH = mCanvas.height = window.innerHeight;
+        }
+        resizeMeteor();
+        window.addEventListener('resize', resizeMeteor);
+
+        const meteors = [];
+        function spawnMeteor() {
+            meteors.push({
+                x: Math.random() * mW,
+                y: Math.random() * mH * 0.55,
+                vx: -(3 + Math.random() * 6),
+                vy: 2 + Math.random() * 4,
+                len: 70 + Math.random() * 130,
+                life: 1,
+                decay: 0.006 + Math.random() * 0.008,
+                width: 1 + Math.random() * 1.6
+            });
+        }
+        function meteorBurst(n) {
+            for (let i = 0; i < n; i++) spawnMeteor();
+        }
+
+        function drawMeteors() {
+            mCtx.clearRect(0, 0, mW, mH);
+            for (let i = meteors.length - 1; i >= 0; i--) {
+                const m = meteors[i];
+                m.x += m.vx; m.y += m.vy; m.life -= m.decay;
+                if (m.life <= 0 || m.x < -300 || m.x > mW + 300 || m.y > mH + 300) {
+                    meteors.splice(i, 1); continue;
+                }
+                const tx = m.x - m.vx * m.len * 0.06;
+                const ty = m.y - m.vy * m.len * 0.06;
+                const grad = mCtx.createLinearGradient(m.x, m.y, tx, ty);
+                grad.addColorStop(0, `rgba(255,255,255,${m.life})`);
+                grad.addColorStop(0.4, `rgba(160,200,255,${m.life * 0.5})`);
+                grad.addColorStop(1, 'rgba(160,200,255,0)');
+                mCtx.strokeStyle = grad;
+                mCtx.lineWidth = m.width;
+                mCtx.lineCap = 'round';
+                mCtx.beginPath();
+                mCtx.moveTo(m.x, m.y);
+                mCtx.lineTo(tx, ty);
+                mCtx.stroke();
+                mCtx.fillStyle = `rgba(255,255,255,${m.life})`;
+                mCtx.beginPath();
+                mCtx.arc(m.x, m.y, m.width * 1.8, 0, Math.PI * 2);
+                mCtx.fill();
+            }
+            requestAnimationFrame(drawMeteors);
+        }
+        drawMeteors();
+        // 平时缓缓飘落的流星（密度加大：约每 0.25~0.5 秒 1~3 颗）
+        (function ambientMeteor() {
+            setTimeout(() => {
+                const n = 1 + Math.floor(Math.random() * 3); // 每次 1~3 颗
+                for (let i = 0; i < n; i++) spawnMeteor();
+                ambientMeteor();
+            }, 250 + Math.random() * 250);
+        })();
+
+        // ================= 点击轮播 =================
+        let idx = 0;
+        let busy = false;
+        const total = MESSAGES.length;
+
+        document.body.addEventListener('click', () => {
+            if (busy) return; // 烟花播放中，忽略连点，避免误触跳句
+            busy = true;
+
+            const text = MESSAGES[idx % total];
+            // 先设置下一句的文字和字号，再爆炸（2秒后粒子聚合成该文字，单行显示）
+            cake.config.text = text;
+            cake.config.textSize = fitTextSize(text);
+            cake.explode();
+            document.getElementById('overlay').classList.add('fired');
+
+            // 点击联动：流星雨爆发（加大规模）
+            meteorBurst(24 + Math.floor(Math.random() * 10));
+
+            idx += 1;
+            // 2.2 秒后（烟花散尽、文字聚合成型）解除锁定
+            setTimeout(() => { busy = false; }, 2200);
+        });
+
+        // 标题同步
+        document.title = MESSAGES[0] + ' 🎂';
+
+        // 调试/演示模式：URL 带 ?auto 时自动轮播（供预览验证）
+        if (new URLSearchParams(location.search).has('auto')) {
+            setTimeout(() => document.body.click(), 800);
+            setInterval(() => document.body.click(), 3600);
+        }
+    </script>
+</body>
+</html>
